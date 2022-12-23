@@ -365,7 +365,6 @@ if not ospath.exists('.netrc'):
     srun(["touch", ".netrc"])
 srun(["cp", ".netrc", "/root/.netrc"])
 srun(["chmod", "600", ".netrc"])
-srun(["chmod", "+x", "aria.sh"])
 srun("./aria.sh", shell=True)
 sleep(0.5)
 if ospath.exists('accounts.zip'):
@@ -379,11 +378,9 @@ if not ospath.exists('accounts'):
 
 aria2 = ariaAPI(ariaClient(host="http://localhost", port=6800, secret=""))
 
-trackers = check_output("curl -Ns https://raw.githubusercontent.com/XIU2/TrackersListCollection/master/all.txt https://ngosang.github.io/trackerslist/trackers_all_http.txt https://newtrackon.com/api/all https://raw.githubusercontent.com/hezhijie0327/Trackerslist/main/trackerslist_tracker.txt | awk '$0' | tr '\n\n' ','", shell=True).decode('utf-8').rstrip(',')
 with open("a2c.conf", "a+") as a:
     if TORRENT_TIMEOUT is not None:
         a.write(f"bt-stop-timeout={TORRENT_TIMEOUT}\n")
-    a.write(f"bt-tracker=[{trackers}]")
 srun(["chrome", "--conf-path=/usr/src/app/a2c.conf"])
 alive = Popen(["python3", "alive.py"])
 sleep(0.5)
@@ -403,20 +400,5 @@ def aria2c_init():
         log_error(f"Aria2c initializing error: {e}")
 Thread(target=aria2c_init).start()
     
-aria2c_global = ['bt-max-open-files', 'download-result', 'keep-unfinished-download-result', 'log', 'log-level',
-                 'max-concurrent-downloads', 'max-download-result', 'max-overall-download-limit', 'save-session',
-                 'max-overall-upload-limit', 'optimize-concurrent-downloads', 'save-cookies', 'server-stat-of']
-                                    
-if not aria2_options:
-    aria2_options = aria2.client.get_global_option()
-    del aria2_options['dir']
-    del aria2_options['max-download-limit']
-    del aria2_options['lowest-speed-limit']
-else:
-    a2c_glo = {}
-    for op in aria2c_global:
-        if op in aria2_options:
-            a2c_glo[op] = aria2_options[op]
-    aria2.set_global_options(a2c_glo)
    
 qb_client = get_client()
