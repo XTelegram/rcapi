@@ -420,15 +420,3 @@ else:
     aria2.set_global_options(a2c_glo)
    
 qb_client = get_client()
-if not qbit_options:
-    qbit_options = dict(qb_client.app_preferences())
-    del qbit_options['listen_port']
-    for k in list(qbit_options.keys()):
-        if k.startswith('rss'):
-            del qbit_options[k]
-else:
-    qb_opt = {**qbit_options}
-    for k, v in list(qb_opt.items()):
-        if v in ["", "*"]:
-            del qb_opt[k]
-    qb_client.app_set_preferences(qb_opt)
