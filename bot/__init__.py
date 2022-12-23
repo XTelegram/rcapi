@@ -379,21 +379,29 @@ if not ospath.exists('accounts'):
 
 aria2 = ariaAPI(ariaClient(host="http://localhost", port=6800, secret=""))
 
+trackers = check_output("curl -Ns https://raw.githubusercontent.com/XIU2/TrackersListCollection/master/all.txt https://ngosang.github.io/trackerslist/trackers_all_http.txt https://newtrackon.com/api/all https://raw.githubusercontent.com/hezhijie0327/Trackerslist/main/trackerslist_tracker.txt | awk '$0' | tr '\n\n' ','", shell=True).decode('utf-8').rstrip(',')
+with open("a2c.conf", "a+") as a:
+    if TORRENT_TIMEOUT is not None:
+        a.write(f"bt-stop-timeout={TORRENT_TIMEOUT}\n")
+    a.write(f"bt-tracker=[{trackers}]")
+srun(["chrome", "--conf-path=/usr/src/app/a2c.conf"])
+alive = Popen(["python3", "alive.py"])
+sleep(0.5)
+
 def aria2c_init():
     try:
-        LOGGER.info("Initializing Aria2c")
+        log_info("Initializing Aria2c")
         link = "https://linuxmint.com/torrents/lmde-5-cinnamon-64bit.iso.torrent"
         dire = DOWNLOAD_DIR.rstrip("/")
         aria2.add_uris([link], {'dir': dire})
         sleep(3)
         downloads = aria2.get_downloads()
-        sleep(15)
+        sleep(20)
         for download in downloads:
             aria2.remove([download], force=True, files=True)
     except Exception as e:
-        LOGGER.error(f"Aria2c initializing error: {e}")
+        log_error(f"Aria2c initializing error: {e}")
 Thread(target=aria2c_init).start()
-sleep(1.5)
     
 aria2c_global = ['bt-max-open-files', 'download-result', 'keep-unfinished-download-result', 'log', 'log-level',
                  'max-concurrent-downloads', 'max-download-result', 'max-overall-download-limit', 'save-session',
