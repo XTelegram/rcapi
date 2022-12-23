@@ -1,6 +1,6 @@
 __version__ = "4.0"
 __author__ = "Sam-Max"
-
+import re
 from asyncio import Lock
 from asyncio import Queue
 from logging import getLogger, FileHandler, StreamHandler, INFO, basicConfig
@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from aria2p import API as ariaAPI, Client as ariaClient
 from qbittorrentapi import Client as qbitClient
-from subprocess import Popen, run as srun
+from subprocess import Popen, run as srun, check_output
 from pyrogram import Client
 from bot.conv_pyrogram import Conversation
 from asyncio import get_event_loop
@@ -420,5 +420,33 @@ def aria2c_init():
         log_error(f"Aria2c initializing error: {e}")
 Thread(target=aria2c_init).start()
     
+aria2c_global = ['bt-max-open-files', 'download-result', 'keep-unfinished-download-result', 'log', 'log-level',
+                 'max-concurrent-downloads', 'max-download-result', 'max-overall-download-limit', 'save-session',
+                 'max-overall-upload-limit', 'optimize-concurrent-downloads', 'save-cookies', 'server-stat-of']
+                                    
+if not aria2_options:
+    aria2_options = aria2.client.get_global_option()
+    del aria2_options['dir']
+    del aria2_options['max-download-limit']
+    del aria2_options['lowest-speed-limit']
+else:
+    a2c_glo = {}
+    for op in aria2c_global:
+        if op in aria2_options:
+            a2c_glo[op] = aria2_options[op]
+    aria2.set_global_options(a2c_glo)
    
+qb_client = get_client()
+if not qbit_options:
+    qbit_options = dict(qb_client.app_preferences())
+    del qbit_options['listen_port']
+    for k in list(qbit_options.keys()):
+        if k.startswith('rss'):
+            del qbit_options[k]
+else:
+    qb_opt = {**qbit_options}
+    for k, v in list(qb_opt.items()):
+        if v in ["", "*"]:
+            del qb_opt[k]
+    qb_client.app_set_preferences(qb_opt)
 
