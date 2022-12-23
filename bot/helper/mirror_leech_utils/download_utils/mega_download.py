@@ -3,8 +3,10 @@
 from random import SystemRandom
 from string import ascii_letters, digits
 from os import makedirs
+from bot import LOGGER, TELEGRAPH_STYLE, download_dict, download_dict_lock, MEGA_LIMIT, STOP_DUPLICATE, ZIP_UNZIP_LIMIT, STORAGE_THRESHOLD, LEECH_LIMIT, \
+                OWNER_ID, SUDO_USERS, PAID_USERS, PAID_SERVICE
 from threading import Event
-from mega import (MegaApi, MegaListener, MegaRequest, MegaTransfer, MegaError)
+from megasdkrestclient import MegaSdkRestClient, constants
 from bot import LOGGER, config_dict, status_dict, botloop
 from bot.helper.ext_utils.message_utils import sendMessage, sendStatusMessage
 from bot.helper.mirror_leech_utils.status_utils.mega_status import MegaDownloadStatus
@@ -12,155 +14,172 @@ from bot.helper.ext_utils.bot_utils import get_mega_link_type
 
 
 
-class MegaAppListener(MegaListener):
-    _NO_EVENT_ON = (MegaRequest.TYPE_LOGIN, MegaRequest.TYPE_FETCH_NODES)
-    NO_ERROR = "no error"
+class MegaDownloader:
+    POLLING_INTERVAL = 3
 
-    def __init__(self, continue_event: Event, listener):
-        self.continue_event = continue_event
-        self.node = None
-        self.public_node = None
-        self.listener = listener
-        self.__bytes_transferred = 0
-        self.is_cancelled = False
-        self.__speed = 0
-        self.__name = ''
+    def __init__(self, listener):
+        self.__listener = listener
+        self.__name = ""
+        self.__gid = ''
+        self.__resource_lock = Lock()
+        self.__mega_client = MegaSdkRestClient('http://localhost:6090')
+        self.__periodic = None
+        self.__downloaded_bytes = 0
+        self.__progress = 0
         self.__size = 0
-        self.error = None
-        self.gid = ""
-        super(MegaAppListener, self).__init__()
 
     @property
-    def speed(self):
-        """Returns speed of the download in bytes/second"""
-        return self.__speed
-
-    @property
-    def name(self):
-        """Returns name of the download"""
-        return self.__name
-
-    def setValues(self, name, size, gid):
-        self.__name = name
-        self.__size = size
-        self.gid = gid
-
-    @property
-    def size(self):
-        """Size of download in bytes"""
-        return self.__size
+    def progress(self):
+        with self.__resource_lock:
+            return self.__progress
 
     @property
     def downloaded_bytes(self):
-        return self.__bytes_transferred
+        with self.__resource_lock:
+            return self.__downloaded_bytes
 
-    def onRequestFinish(self, api, request, error):
-        if str(error).lower() != "no error":
-            self.error = error.copy()
-            LOGGER.error(self.error)
-            self.continue_event.set()
+    @property
+    def size(self):
+        with self.__resource_lock:
+            return self.__size
+
+    @property
+    def gid(self):
+        with self.__resource_lock:
+            return self.__gid
+
+    @property
+    def name(self):
+        with self.__resource_lock:
+            return self.__name
+
+    @property
+    def download_speed(self):
+        if self.gid is not None:
+            return self.__mega_client.getDownloadInfo(self.gid)['speed']
+
+    def __onDownloadStart(self, name, size, gid):
+        self.__periodic = setInterval(self.POLLING_INTERVAL, self.__onInterval)
+        with download_dict_lock:
+            download_dict[self.__listener.uid] = MegaDownloadStatus(self, self.__listener)
+        with self.__resource_lock:
+            self.__name = name
+            self.__size = size
+            self.__gid = gid
+        self.__listener.onDownloadStart()
+        sendStatusMessage(self.__listener.message, self.__listener.bot)
+
+    def __onInterval(self):
+        dlInfo = self.__mega_client.getDownloadInfo(self.gid)
+        if dlInfo['state'] in [constants.State.TYPE_STATE_COMPLETED, constants.State.TYPE_STATE_CANCELED, 
+            constants.State.TYPE_STATE_FAILED] and self.__periodic is not None:
+            self.__periodic.cancel()
+        if dlInfo['state'] == constants.State.TYPE_STATE_COMPLETED:
+            self.__onDownloadComplete()
             return
-        request_type = request.getType()
-        if request_type == MegaRequest.TYPE_LOGIN:
-            api.fetchNodes()
-        elif request_type == MegaRequest.TYPE_GET_PUBLIC_NODE:
-            self.public_node = request.getPublicMegaNode()
-        elif request_type == MegaRequest.TYPE_FETCH_NODES:
-            LOGGER.info("Fetching Root Node.")
-            self.node = api.getRootNode()
-            LOGGER.info(f"Node Name: {self.node.getName()}")
-        if request_type not in self._NO_EVENT_ON or self.node and "cloud drive" not in self.node.getName().lower():
-            self.continue_event.set()
-
-    def onRequestTemporaryError(self, api, request, error: MegaError):
-        LOGGER.error(f'Mega Request error in {error}')
-        if not self.is_cancelled:
-            self.is_cancelled = True
-            botloop.create_task(self.listener.onDownloadError(f"RequestTempError: {error.toString()}"))
-        self.error = error.toString()
-        self.continue_event.set()
-
-    def onTransferUpdate(self, api: MegaApi, transfer: MegaTransfer):
-        if self.is_cancelled:
-            api.cancelTransfer(transfer, None)
-            self.continue_event.set()
+        if dlInfo['state'] == constants.State.TYPE_STATE_CANCELED:
+            self.__onDownloadError('Download stopped by user!')
             return
-        self.__speed = transfer.getSpeed()
-        self.__bytes_transferred = transfer.getTransferredBytes()
+        if dlInfo['state'] == constants.State.TYPE_STATE_FAILED:
+            self.__onDownloadError(dlInfo['error_string'])
+            return
+        self.__onDownloadProgress(dlInfo['completed_length'], dlInfo['total_length'])
 
-    def onTransferFinish(self, api: MegaApi, transfer: MegaTransfer, error):
+    def __onDownloadProgress(self, current, total):
+        with self.__resource_lock:
+            self.__downloaded_bytes = current
+            try:
+                self.__progress = current / total * 100
+            except ZeroDivisionError:
+                self.__progress = 0
+
+    def __onDownloadError(self, error):
+        self.__listener.onDownloadError(error)
+
+    def __onDownloadComplete(self):
+        self.__listener.onDownloadComplete()
+
+    def add_download(self, link, path):
+        Path(path).mkdir(parents=True, exist_ok=True)
         try:
-            if self.is_cancelled:
-                self.continue_event.set()
-                return
-            elif transfer.isFinished() and (transfer.isFolderTransfer() or transfer.getFileName() == self.name):
-                botloop.create_task(self.listener.onDownloadComplete())
-                self.continue_event.set()
-        except Exception as e:
-            LOGGER.error(e)
-
-    def onTransferTemporaryError(self, api, transfer, error):
-        filen = transfer.getFileName()
-        state = transfer.getState()
-        errStr = error.toString()
-        LOGGER.error(f'Mega download error in file {transfer} {filen}: {error}')
-        if state in [1, 4]:
-            # Sometimes MEGA (offical client) can't stream a node either and raises a temp failed error.
-            # Don't break the transfer queue if transfer's in queued (1) or retrying (4) state [causes seg fault]
-            return
-        self.error = errStr
-        if not self.is_cancelled:
-            self.is_cancelled = True
-            botloop.create_task(self.listener.onDownloadError(f"TransferTempError: {errStr} ({filen})"))
-            self.continue_event.set()
+            dl = self.__mega_client.addDl(link, path)
+        except Exception as err:
+            LOGGER.error(err)
+            return sendMessage(str(err), self.__listener.bot, self.__listener.message)
+        gid = dl['gid']
+        info = self.__mega_client.getDownloadInfo(gid)
+        file_name = info['name']
+        file_size = info['total_length']
+        if STOP_DUPLICATE and not self.__listener.isLeech:
+            LOGGER.info('Checking File/Folder if already in Drive')
+            mname = file_name
+            if self.__listener.isZip:
+                mname = f"{mname}.zip"
+            elif self.__listener.extract:
+                try:
+                    mname = get_base_name(mname)
+                except:
+                    mname = None
+            if mname is not None:
+                if TELEGRAPH_STYLE is True:
+                    smsg, button = GoogleDriveHelper().drive_list(mname, True)
+                    if smsg:
+                        msg1 = "File/Folder is already available in Drive.\nHere are the search results:"
+                        return sendMarkup(msg1, self.__listener.bot, self.__listener.message, button)
+                else:
+                    cap, f_name = GoogleDriveHelper().drive_list(mname, True)
+                    if cap:
+                        cap = f"File/Folder is already available in Drive. Here are the search results:\n\n{cap}"
+                        sendFile(self.__listener.bot, self.__listener.message, f_name, cap)
+                        return
+        user_id = self.__listener.message.from_user.id
+        if any([STORAGE_THRESHOLD, ZIP_UNZIP_LIMIT, MEGA_LIMIT, LEECH_LIMIT]) and user_id != OWNER_ID and user_id not in SUDO_USERS and user_id not in PAID_USERS:
+            arch = any([self.__listener.isZip, self.__listener.extract])
+            if PAID_SERVICE is True:
+                if STORAGE_THRESHOLD is not None:
+                    acpt = check_storage_threshold(file_size, arch)
+                    if not acpt:
+                        msg = f'You must leave {STORAGE_THRESHOLD}GB free storage.'
+                        msg += f'\nYour File/Folder size is {get_readable_file_size(file_size)}'
+                        msg += f'\n#Buy Paid Service'
+                        return sendMessage(msg, self.__listener.bot, self.__listener.message)
+                limit = None
+                if ZIP_UNZIP_LIMIT is not None and arch:
+                    msg3 = f'Failed, Zip/Unzip limit is {ZIP_UNZIP_LIMIT}GB.\nYour File/Folder size is {get_readable_file_size(file_size)}.'
+                    msg3 += f'\n#Buy Paid Service'
+                    limit = ZIP_UNZIP_LIMIT
+                if LEECH_LIMIT is not None and self.__listener.isLeech:
+                    msg3 = f'Failed, Leech limit is {LEECH_LIMIT}GB.\nYour File/Folder size is {get_readable_file_size(file_size)}.'
+                    msg3 += f'\n#Buy Paid Service'
+                    limit = LEECH_LIMIT
+                elif MEGA_LIMIT is not None:
+                    msg3 = f'Failed, Mega limit is {MEGA_LIMIT}GB.\nYour File/Folder size is {get_readable_file_size(file_size)}.'
+                    msg3 += f'\n#Buy Paid Service'
+                    limit = MEGA_LIMIT
+            else:
+                if STORAGE_THRESHOLD is not None:
+                    acpt = check_storage_threshold(file_size, arch)
+                    if not acpt:
+                        msg = f'You must leave {STORAGE_THRESHOLD}GB free storage.'
+                        msg += f'\nYour File/Folder size is {get_readable_file_size(file_size)}'
+                        return sendMessage(msg, self.__listener.bot, self.__listener.message)
+                limit = None
+                if ZIP_UNZIP_LIMIT is not None and arch:
+                    msg3 = f'Failed, Zip/Unzip limit is {ZIP_UNZIP_LIMIT}GB.\nYour File/Folder size is {get_readable_file_size(file_size)}.'
+                    limit = ZIP_UNZIP_LIMIT
+                if LEECH_LIMIT is not None and self.__listener.isLeech:
+                    msg3 = f'Failed, Leech limit is {LEECH_LIMIT}GB.\nYour File/Folder size is {get_readable_file_size(file_size)}.'
+                    limit = LEECH_LIMIT
+                elif MEGA_LIMIT is not None:
+                    msg3 = f'Failed, Mega limit is {MEGA_LIMIT}GB.\nYour File/Folder size is {get_readable_file_size(file_size)}.'
+                    limit = MEGA_LIMIT
+            if limit is not None:
+                LOGGER.info('Checking File/Folder Size...')
+                if file_size > limit * 1024**3:
+                    return sendMessage(msg3, self.__listener.bot, self.__listener.message)
+        self.__onDownloadStart(file_name, file_size, gid)
+        LOGGER.info(f'Mega download started with gid: {gid}')
 
     def cancel_download(self):
-        self.is_cancelled = True
-        botloop.create_task(self.listener.onDownloadError("Download Canceled by user"))
-
-class AsyncExecutor:
-    def __init__(self):
-        self.continue_event = Event()
-
-    def do(self, function, args):
-        self.continue_event.clear()
-        function(*args)
-        self.continue_event.wait()
-        
-def add_mega_download(mega_link: str, path: str, listener, name: str):
-    MEGA_API_KEY = config_dict['MEGA_API_KEY']
-    MEGA_EMAIL_ID = config_dict['MEGA_EMAIL_ID']
-    MEGA_PASSWORD = config_dict['MEGA_PASSWORD']
-    api = MegaApi(MEGA_API_KEY, None, None, 'rclone-mirror-telegram-bot')
-    executor = AsyncExecutor()
-    folder_api = None
-    mega_listener = MegaAppListener(executor.continue_event, listener)
-    api.addListener(mega_listener)
-    if MEGA_EMAIL_ID and MEGA_PASSWORD:
-        executor.do(api.login, (MEGA_EMAIL_ID, MEGA_PASSWORD))
-    if get_mega_link_type(mega_link) == "file":
-        executor.do(api.getPublicNode, (mega_link,))
-        node = mega_listener.public_node
-    else:
-        folder_api = MegaApi(MEGA_API_KEY, None, None, 'rcmltb')
-        folder_api.addListener(mega_listener)
-        executor.do(folder_api.loginToFolder, (mega_link,))
-        node= folder_api.authorizeNode(mega_listener.node)
-    if mega_listener.error is not None:
-        botloop.create_task(sendMessage(str(mega_listener.error), listener.message))
-        api.removeListener(mega_listener)
-        if folder_api is not None:
-            folder_api.removeListener(mega_listener)
-        return
-    mname = name or node.getName()
-    status_dict[listener.uid] = MegaDownloadStatus(mega_listener, listener)
-    listener.onDownloadStart()
-    makedirs(path)
-    gid = ''.join(SystemRandom().choices(ascii_letters + digits, k=8))
-    mname = name or node.getName()
-    mega_listener.setValues(mname, api.getSize(node), gid)
-    botloop.create_task(sendStatusMessage(listener.message))
-    executor.do(api.startDownload, (node, path, name, None, False, None))
-    api.removeListener(mega_listener)
-    if folder_api is not None:
-        folder_api.removeListener(mega_listener)
+        LOGGER.info(f'Cancelling download on user request: {self.gid}')
+        self.__mega_client.cancelDl(self.gid)
