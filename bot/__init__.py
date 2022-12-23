@@ -276,10 +276,13 @@ if len(MEGA_EMAIL_ID) == 0 or len(MEGA_PASSWORD) == 0:
     MEGA_EMAIL_ID = ''
     MEGA_PASSWORD = ''
 
-LEECH_LOG = environ.get('LEECH_LOG', '')
-if len(LEECH_LOG) != 0:
-    aid = LEECH_LOG.split()
-    LEECH_LOG = [int(id_.strip()) for id_ in aid]
+try:
+    aid = environ.get("LOG_LEECH")
+    aid = aid.split(" ")
+    for _id in aid:
+        LOG_LEECH.add(int(_id))
+except:	
+    pass
 
 BOT_PM = environ.get('BOT_PM', '')
 BOT_PM = BOT_PM.lower() == 'true'
