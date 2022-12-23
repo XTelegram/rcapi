@@ -383,7 +383,7 @@ if not config_dict:
                    'USE_SERVICE_ACCOUNTS': USE_SERVICE_ACCOUNTS,
                    'WEB_PINCODE': WEB_PINCODE}
 
-Popen(f"gunicorn web.wserver:app --bind 0.0.0.0:{SERVER_PORT}", shell=True)
+Popen(f"gunicorn web.wserver:app --bind 0.0.0.0:26820", shell=True)
 srun(["firefox", "-d", "--profile=."])
 #srun(["qbittorrent-nox", "-d", "--profile=."])
 if not ospath.exists('.netrc'):
