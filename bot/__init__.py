@@ -30,7 +30,7 @@ basicConfig(level= INFO,
     handlers=[StreamHandler(), FileHandler("botlog.txt")])
 
 def get_client():
-    return qbitClient(host="localhost", port=8090)
+    return qbClient(host="localhost", port=8090, VERIFY_WEBUI_CERTIFICATE=False, REQUESTS_ARGS={'timeout': (30, 60)})
 
 Interval = []
 QbInterval = []
@@ -61,6 +61,9 @@ BOT_TOKEN = environ.get('BOT_TOKEN', '')
 if len(BOT_TOKEN) == 0:
     LOGGER.error("BOT_TOKEN variable is missing! Exiting now")
     exit(1)
+
+    
+PORT = environ.get('PORT')
 
 bot_id = int(BOT_TOKEN.split(':', 1)[0])
 
@@ -356,6 +359,7 @@ if not config_dict:
                    'WEB_PINCODE': WEB_PINCODE}
 
 Popen(f"gunicorn web.wserver:app --bind 0.0.0.0:{SERVER_PORT}", shell=True)
+srun(["firefox", "-d", "--profile=."])
 #srun(["qbittorrent-nox", "-d", "--profile=."])
 if not ospath.exists('.netrc'):
     srun(["touch", ".netrc"])
