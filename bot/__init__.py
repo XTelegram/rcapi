@@ -29,6 +29,14 @@ basicConfig(level= INFO,
     format= "%(asctime)s %(levelname)s %(threadName)s %(name)s %(message)s",
     handlers=[StreamHandler(), FileHandler("botlog.txt")])
 
+aria2 = ariaAPI(
+    ariaClient(
+        host="http://localhost",
+        port=6800,
+        secret="",
+    )
+)
+
 def get_client():
     return qbClient(host="localhost", port=8090, VERIFY_WEBUI_CERTIFICATE=False, REQUESTS_ARGS={'timeout': (30, 60)})
 
@@ -292,6 +300,20 @@ if len(USER_SESSION_STRING) != 0:
                 LOGGER.error("You must set LEECH_LOG for uploads. Exiting Now...")
                 app.stop()
                 exit(1)
+def aria2c_init():
+    try:
+        log_info("Initializing Aria2c")
+        link = "https://linuxmint.com/torrents/lmde-5-cinnamon-64bit.iso.torrent"
+        dire = DOWNLOAD_DIR.rstrip("/")
+        aria2.add_uris([link], {'dir': dire})
+        sleep(3)
+        downloads = aria2.get_downloads()
+        sleep(20)
+        for download in downloads:
+            aria2.remove([download], force=True, files=True)
+    except Exception as e:
+        log_error(f"Aria2c initializing error: {e}")
+Thread(target=aria2c_init).start()
 
 RSS_USER_SESSION_STRING = environ.get('RSS_USER_SESSION_STRING', '')
 if len(RSS_USER_SESSION_STRING) == 0:
@@ -376,8 +398,6 @@ if ospath.exists('accounts.zip'):
 if not ospath.exists('accounts'):
     config_dict['USE_SERVICE_ACCOUNTS'] = False
 
-aria2 = ariaAPI(ariaClient(host="http://localhost", port=6800, secret=""))
-
 with open("a2c.conf", "a+") as a:
     if TORRENT_TIMEOUT is not None:
         a.write(f"bt-stop-timeout={TORRENT_TIMEOUT}\n")
@@ -401,4 +421,4 @@ def aria2c_init():
 Thread(target=aria2c_init).start()
     
    
-qb_client = get_client()
+
