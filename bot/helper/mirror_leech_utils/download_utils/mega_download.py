@@ -4,7 +4,7 @@
 from threading import Lock
 from pathlib import Path
 
-from bot import LOGGER, TELEGRAPH_STYLE, download_dict, download_dict_lock, MEGA_LIMIT, STOP_DUPLICATE, ZIP_UNZIP_LIMIT, STORAGE_THRESHOLD, LEECH_LIMIT, \
+from bot import LOGGER,  download_dict, download_dict_lock, MEGA_LIMIT, STOP_DUPLICATE, ZIP_UNZIP_LIMIT, STORAGE_THRESHOLD, LEECH_LIMIT, \
                 OWNER_ID, SUDO_USERS, PAID_USERS, PAID_SERVICE
 from bot.helper.telegram_helper.message_utils import sendMessage, sendMarkup, sendStatusMessage, sendStatusMessage, sendFile
 from bot.helper.ext_utils.bot_utils import get_readable_file_size, setInterval
