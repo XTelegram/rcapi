@@ -1,138 +1,116 @@
 # Source: https://github.com/anasty17/mirror-leech-telegram-bot/
+# Adapted for asyncio framework and pyrogram library
 
-from random import SystemRandom
-from string import ascii_letters, digits
-from os import makedirs
-from bot import LOGGER, TELEGRAPH_STYLE, download_dict, download_dict_lock
-from threading import Event
+from threading import Lock
+from pathlib import Path
+
+from bot import LOGGER, TELEGRAPH_STYLE, download_dict, download_dict_lock, MEGA_LIMIT, STOP_DUPLICATE, ZIP_UNZIP_LIMIT, STORAGE_THRESHOLD, LEECH_LIMIT, \
+                OWNER_ID, SUDO_USERS, PAID_USERS, PAID_SERVICE
+from bot.helper.telegram_helper.message_utils import sendMessage, sendMarkup, sendStatusMessage, sendStatusMessage, sendFile
+from bot.helper.ext_utils.bot_utils import get_readable_file_size, setInterval
+from bot.helper.mirror_utils.upload_utils.gdriveTools import GoogleDriveHelper
+from bot.helper.ext_utils.fs_utils import get_base_name, check_storage_threshold
+from ..status_utils.mega_download_status import MegaDownloadStatus
 from megasdkrestclient import MegaSdkRestClient, constants
-from bot import LOGGER, config_dict, status_dict, botloop
-from bot.helper.ext_utils.message_utils import sendMessage, sendStatusMessage
-from bot.helper.mirror_leech_utils.status_utils.mega_status import MegaDownloadStatus
-from bot.helper.ext_utils.bot_utils import get_mega_link_type
 
 
-
-class MegaDownloader:
+class MegaDownloader():
     POLLING_INTERVAL = 3
 
-    def __init__(self, listener):
-        self.__listener = listener
-        self.__name = ""
+    def __init__(self, link, listener):
+        super().__init__()
+        self._link = link
+        self.__name = ''
         self.__gid = ''
-        self.__resource_lock = Lock()
         self.__mega_client = MegaSdkRestClient('http://localhost:6090')
-        self.__periodic = None
+        self.__listener = listener
+        self.__periodic= None
         self.__downloaded_bytes = 0
         self.__progress = 0
         self.__size = 0
 
     @property
     def progress(self):
-        with self.__resource_lock:
-            return self.__progress
+        return self.__progress
 
     @property
     def downloaded_bytes(self):
-        with self.__resource_lock:
-            return self.__downloaded_bytes
+        return self.__downloaded_bytes
 
     @property
     def size(self):
-        with self.__resource_lock:
-            return self.__size
+        return self.__size
 
     @property
     def gid(self):
-        with self.__resource_lock:
-            return self.__gid
+        return self.__gid
 
     @property
     def name(self):
-        with self.__resource_lock:
-            return self.__name
+        return self.__name
 
     @property
     def download_speed(self):
         if self.gid is not None:
             return self.__mega_client.getDownloadInfo(self.gid)['speed']
 
-    def __onDownloadStart(self, name, size, gid):
+    async def __onDownloadStart(self, name, size, gid):
         self.__periodic = setInterval(self.POLLING_INTERVAL, self.__onInterval)
-        with download_dict_lock:
-            download_dict[self.__listener.uid] = MegaDownloadStatus(self, self.__listener)
-        with self.__resource_lock:
+        async with status_dict_lock:
+            status_dict[self.__listener.uid] = MegaDownloadStatus(self, self.__listener)
             self.__name = name
             self.__size = size
             self.__gid = gid
         self.__listener.onDownloadStart()
-        sendStatusMessage(self.__listener.message, self.__listener.bot)
+        await sendStatusMessage(self.__listener.message)
 
-    def __onInterval(self):
-        dlInfo = self.__mega_client.getDownloadInfo(self.gid)
-        if dlInfo['state'] in [constants.State.TYPE_STATE_COMPLETED, constants.State.TYPE_STATE_CANCELED, 
-            constants.State.TYPE_STATE_FAILED] and self.__periodic is not None:
-            self.__periodic.cancel()
-        if dlInfo['state'] == constants.State.TYPE_STATE_COMPLETED:
-            self.__onDownloadComplete()
-            return
-        if dlInfo['state'] == constants.State.TYPE_STATE_CANCELED:
-            self.__onDownloadError('Download stopped by user!')
-            return
-        if dlInfo['state'] == constants.State.TYPE_STATE_FAILED:
-            self.__onDownloadError(dlInfo['error_string'])
-            return
-        self.__onDownloadProgress(dlInfo['completed_length'], dlInfo['total_length'])
+    async def execute(self, path):
+        Path(path).mkdir(parents=True, exist_ok=True)
+        LOGGER.info("MegaDownload Started...")
+        try:
+            dl = await botloop.run_in_executor(None, self.__mega_client.addDl, self._link, path)
+        except Exception as er:
+            return await sendMessage(str(er), self.__listener.message)
+        gid = dl["gid"]
+        info = await botloop.run_in_executor(None, self.__mega_client.getDownloadInfo, gid)
+        name = info['name']
+        size = info['total_length']
+        async with status_dict_lock:  
+            status_dict[self.__listener.uid] = MegaDownloadStatus(self, self.__listener)
+        await self.__onDownloadStart(name, size, gid)
+        LOGGER.info(f'Mega download started with gid: {gid}')
+
+    async def __onDownloadError(self, error):
+        await self.__listener.onDownloadError(error)
+
+    async def __onDownloadComplete(self):
+        await self.__listener.onDownloadComplete()
 
     def __onDownloadProgress(self, current, total):
-        with self.__resource_lock:
             self.__downloaded_bytes = current
             try:
                 self.__progress = current / total * 100
             except ZeroDivisionError:
-                self.__progress = 0
+                self.__progress = 0    
 
-    def __onDownloadError(self, error):
-        self.__listener.onDownloadError(error)
-
-    def __onDownloadComplete(self):
-        self.__listener.onDownloadComplete()
-
-    def add_download(self, link, path):
-        Path(path).mkdir(parents=True, exist_ok=True)
-        try:
-            dl = self.__mega_client.addDl(link, path)
-        except Exception as err:
-            LOGGER.error(err)
-            return sendMessage(str(err), self.__listener.bot, self.__listener.message)
-        gid = dl['gid']
-        info = self.__mega_client.getDownloadInfo(gid)
-        file_name = info['name']
-        file_size = info['total_length']
-        if STOP_DUPLICATE and not self.__listener.isLeech:
-            LOGGER.info('Checking File/Folder if already in Drive')
-            mname = file_name
-            if self.__listener.isZip:
-                mname = f"{mname}.zip"
-            elif self.__listener.extract:
-                try:
-                    mname = get_base_name(mname)
-                except:
-                    mname = None
-            if mname is not None:
-                if TELEGRAPH_STYLE is True:
-                    smsg, button = GoogleDriveHelper().drive_list(mname, True)
-                    if smsg:
-                        msg1 = "File/Folder is already available in Drive.\nHere are the search results:"
-                        return sendMarkup(msg1, self.__listener.bot, self.__listener.message, button)
-                else:
-                    cap, f_name = GoogleDriveHelper().drive_list(mname, True)
-                    if cap:
-                        cap = f"File/Folder is already available in Drive. Here are the search results:\n\n{cap}"
-                        sendFile(self.__listener.bot, self.__listener.message, f_name, cap)
-                        return
-        self.__onDownloadStart(file_name, file_size, gid)
-        LOGGER.info(f'Mega download started with gid: {gid}')
+    async def __onInterval(self):
+        dlInfo = self.__mega_client.getDownloadInfo(self.gid)
+        name = dlInfo['name']
+        if dlInfo['state'] in [constants.State.TYPE_STATE_COMPLETED, constants.State.TYPE_STATE_CANCELED, 
+            constants.State.TYPE_STATE_FAILED] and self.__periodic is not None:
+            self.__periodic.cancel()
+        if dlInfo['state'] == constants.State.TYPE_STATE_COMPLETED:
+            await self.__onDownloadComplete()
+            return
+        if dlInfo['state'] == constants.State.TYPE_STATE_CANCELED:
+            LOGGER.info(f"Cancelling Download: {name}, cause: 'Download stopped by user!'")
+            await self.__onDownloadError('Download stopped by user!')
+            return
+        if dlInfo['state'] == constants.State.TYPE_STATE_FAILED:
+            LOGGER.info(f"Cancelling Download: {name}, cause: {dlInfo['error_string']}'")
+            await self.__onDownloadError(dlInfo['error_string'])
+            return
+        self.__onDownloadProgress(dlInfo['completed_length'], dlInfo['total_length'])
 
     def cancel_download(self):
         LOGGER.info(f'Cancelling download on user request: {self.gid}')
